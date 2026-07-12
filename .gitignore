@@ -24,7 +24,6 @@ debug_jzsz_match.jpg
 # Intermediate analysis / runtime outputs
 found_frames/
 interesting_frames/
-positive_candidates/
 predicted_positive/
 review_suspicious/
 cnn_found_test/
