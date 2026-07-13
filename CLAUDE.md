@@ -196,16 +196,15 @@ D:\workbuddy_venv\Scripts\python.exe monitor_onnx.py --record-found --duration 3
 
 > 曾尝试 ±5% 平移增强，结果在 tight crop 下文字可能移出检测区域，导致正样本召回从 98.6% 降到 95.2%。±1% / ±2% 的平移幅度小，不会破坏文字结构，同时能提升模型对轻微偏移的容忍度。
 
-### 模型评估结果（最新：预生成 ±1% / ±2% 平移 + 正样本类别权重，数据更新后）
+### 模型评估结果（最新：预生成 ±1% / ±2% 平移 + 正样本类别权重，数据再次扩充后）
 
-- 正样本：`positive_candidates/` 共 **225** 张（去重后 205 张）。
-- 负样本：`new_data/` 共 **876** 张。
-- 训练：RTX 3080 Ti，预生成 3 倍训练数据后 615 正 + 1845 负，30 epoch，最佳验证准确率 **98.2%**。
-- 类别权重：负样本 1.00，正样本 **3.00**（正样本为少数类且漏检代价高）。
-- ONNX CPU 推理：**354.2 FPS**（2.82 ms/帧），仍远超 60 FPS 需求。
-- `positive_candidates/` 直接召回：**224/225 = 99.6%**。
-- `new_data/` 中误报：**13/876 ≈ 1.5%**，主要包含 `beep_*.jpg` 实时截图与若干边界样本。
-- 唯一未检测到的正样本：`negative_0050_frame06280_prob0.064_pred0.jpg`（概率 0.166），这是之前已确认的 hard positive，但本轮数据变化后又被漏检。
+- 正样本：`positive_candidates/` 共 **233** 张（去重后 221 张）。
+- 负样本：`new_data/` 共 **887** 张。
+- 训练：RTX 3080 Ti，预生成 3 倍训练数据后 663 正 + 1989 负，30 epoch，最佳验证准确率 **98.3%**。
+- 类别权重：负样本 1.00，正样本 **3.01**（正样本为少数类且漏检代价高）。
+- ONNX CPU 推理：**959.1 FPS**（1.04 ms/帧），远超 60 FPS 需求。
+- `positive_candidates/` 直接召回：**233/233 = 100.0%**（包括之前漏检的 hard positive `negative_0050_frame06280_prob0.064_pred0.jpg`）。
+- `new_data/` 中误报：**11/887 ≈ 1.2%**，主要为 `beep_*.jpg` 实时截图和边界样本。
 
 ### 模型版本存档
 
@@ -225,9 +224,9 @@ D:\workbuddy_venv\Scripts\python.exe monitor_onnx.py --record-found --duration 3
 
 ### 改进建议
 
-- 唯一未检测到的正样本 `negative_0050_frame06280_prob0.064_pred0.jpg` 概率 0.166，曾被人工确认为毋庸置疑的正样本，但本轮数据更新后模型再次漏检。建议单独放大该样本或复制多份加入训练集，也可以降低阈值到 0.15 来召回它，但会引入更多误报。
-- `new_data/` 中仍包含若干 `beep_*.jpg` 高概率样本（0.5–0.95），其中可能是真正的“精准收招”触发截图，建议复核后决定是否归入 `positive_candidates/`。
-- 如需进一步降低误报，可检查 `predicted_positive/` 目录中的 13 张预测正样本，做人工清洗后反向补充到负样本。
+- 当前 `positive_candidates/` 已实现 **100% 召回**， hardest positive（`negative_0050_frame06280_prob0.064_pred0.jpg`）已被正确识别。
+- `new_data/` 中仍有 11 张被预测为正，其中包含若干 `beep_*.jpg` 高概率实时截图（0.48–0.83），建议复核后决定是否归入 `positive_candidates/`。
+- 如需进一步降低误报，可检查 `predicted_positive/` 目录中的 11 张预测正样本，做人工清洗后反向补充到负样本。
 - 当前已使用类别权重（正样本 3.01）和 ±1% / ±2% 预生成平移，继续提升的空间主要在清理 `new_data/` 中的错标样本。
 - 若追求更高精度，可尝试 MobileNetV3-Small（2.5M 参数），但推理速度会略低于 SqueezeNet。
 
