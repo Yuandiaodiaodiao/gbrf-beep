@@ -15,6 +15,7 @@ Usage:
     python detect_jzsz_beep_onnx.py --region 2719,1559,2993,1764
     python detect_jzsz_beep_onnx.py --threshold 0.6 --cooldown 2.0
     python detect_jzsz_beep_onnx.py --run-duration 60 --no-beep
+    python detect_jzsz_beep_onnx.py --beep-crops-dir collected_beep_crops
 
 Press Ctrl+C to stop.
 """
@@ -78,6 +79,17 @@ def predict(session, input_name: str, input_tensor: np.ndarray) -> float:
     return float(probs[1])
 
 
+def save_beep_crop(img, output_dir: Path, frame_count: int, prob: float, quality: int = 90) -> Path:
+    """Save the raw region crop as a JPEG for later training data collection."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    filename = f"beep_{timestamp}_f{frame_count:05d}_p{prob:.3f}.jpg"
+    filepath = output_dir / filename
+    pil_img = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
+    pil_img.save(filepath, "JPEG", quality=quality)
+    return filepath
+
+
 def parse_region(arg: str) -> tuple[int, int, int, int]:
     """Parse a 'left,top,right,bottom' string into a tuple of ints."""
     parts = [p.strip() for p in arg.split(",")]
@@ -136,6 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run for N seconds then stop (0 = infinite, default: 0)",
     )
     parser.add_argument(
+        "--beep-crops-dir",
+        default="beep_crops",
+        help="Directory to save crop images on each beep (default: beep_crops)",
+    )
+    parser.add_argument(
+        "--beep-crop-quality",
+        type=int,
+        default=90,
+        help="JPEG quality for saved beep crops (default: 90)",
+    )
+    parser.add_argument(
         "--no-beep",
         action="store_true",
         help="Print detections without actually playing the beep sound",
@@ -156,6 +179,7 @@ def main() -> None:
     print(f"Interval: {args.interval_ms}ms")
     print(f"Cooldown: {args.cooldown}s")
     print(f"Beep: {args.frequency}Hz / {args.duration}ms")
+    print(f"Beep crops: {args.beep_crops_dir} (quality={args.beep_crop_quality})")
     if args.run_duration > 0:
         print(f"Run duration: {args.run_duration}s")
     print("")
@@ -163,6 +187,9 @@ def main() -> None:
     session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
 
+    crops_dir = Path(args.beep_crops_dir)
+    crops_dir.mkdir(parents=True, exist_ok=True)
+    saved_count = 0
     with mss.MSS() as sct:
         monitor = sct.monitors[1]
         mw, mh = monitor["width"], monitor["height"]
@@ -192,7 +219,7 @@ def main() -> None:
                 # Stop after the requested run duration.
                 if args.run_duration > 0 and (now - start_time) >= args.run_duration:
                     print(f"\nRun duration reached ({args.run_duration}s). Stopping.")
-                    print(f"Total frames: {frame_count}")
+                    print(f"Total frames: {frame_count}, Beep crops saved: {saved_count}")
                     break
 
                 # After a beep we pause all detection for the cooldown period.
@@ -222,10 +249,15 @@ def main() -> None:
 
                 if found:
                     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    crop_path = save_beep_crop(
+                        img, crops_dir, frame_count, prob, args.beep_crop_quality
+                    )
+                    saved_count += 1
                     print(
                         f"\n[{timestamp}] #{frame_count} FOUND prob={prob:.3f} => BEEP",
                         flush=True,
                     )
+                    print(f"  Saved crop: {crop_path}", flush=True)
                     if not args.no_beep:
                         beep(args.frequency, args.duration)
                     pause_until = time.time() + args.cooldown
@@ -243,7 +275,7 @@ def main() -> None:
                 sleep_ms = max(0, args.interval_ms - elapsed)
                 time.sleep(sleep_ms / 1000)
         except KeyboardInterrupt:
-            print("\nStopped by user.")
+            print(f"\nStopped by user. Frames: {frame_count}, Beep crops saved: {saved_count}")
 
 
 if __name__ == "__main__":

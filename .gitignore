@@ -28,3 +28,6 @@ predicted_positive/
 review_suspicious/
 cnn_found_test/
 train_data_aug/
+train_data/
+val_data/
+beep_crops/
