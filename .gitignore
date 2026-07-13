@@ -27,3 +27,4 @@ interesting_frames/
 predicted_positive/
 review_suspicious/
 cnn_found_test/
+train_data_aug/

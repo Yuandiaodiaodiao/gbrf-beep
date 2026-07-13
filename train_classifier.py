@@ -71,6 +71,33 @@ def copy_negatives(neg_candidates, dst_dir):
     for f, src_dir in neg_candidates:
         shutil.copy(os.path.join(src_dir, f), os.path.join(dst_dir, f))
 
+def shift_image(img, shift_pct):
+    """Apply a random translation of up to shift_pct of image size (both x and y)."""
+    w, h = img.size
+    dx = np.random.uniform(-shift_pct, shift_pct) * w
+    dy = np.random.uniform(-shift_pct, shift_pct) * h
+    # Affine matrix: (a, b, c, d, e, f) for [x', y'] = [a x + b y + c, d x + e y + f]
+    return img.transform(img.size, Image.AFFINE, (1, 0, dx, 0, 1, dy), resample=Image.BILINEAR)
+
+def create_augmented_train_data(src_dir, dst_dir, shifts=[0.01, 0.02]):
+    """Create original + shifted versions of each image in src_dir, save to dst_dir."""
+    if os.path.exists(dst_dir):
+        shutil.rmtree(dst_dir)
+    os.makedirs(dst_dir, exist_ok=True)
+    files = [f for f in os.listdir(src_dir) if f.endswith('.jpg')]
+    for f in files:
+        src_path = os.path.join(src_dir, f)
+        img = Image.open(src_path).convert('RGB')
+        base = f[:-4]
+        # Save original
+        shutil.copy(src_path, os.path.join(dst_dir, f))
+        # Save shifted versions
+        for i, shift in enumerate(shifts, start=1):
+            shifted = shift_image(img, shift)
+            shifted_path = os.path.join(dst_dir, f'{base}_shift{int(shift*100)}.jpg')
+            shifted.save(shifted_path, 'JPEG', quality=95)
+    print(f"  Augmented {len(files)} images -> {len(os.listdir(dst_dir))} files in {dst_dir}")
+
 def copy_samples(files, src_dir, dst_dir):
     """Copy samples from a single source directory to dst_dir"""
     os.makedirs(dst_dir, exist_ok=True)
@@ -134,17 +161,16 @@ def train():
     copy_samples(pos_val, POSITIVE_DIR, 'val_data/positive')
     copy_negatives(neg_val, 'val_data/negative')
     
+    # Generate explicit augmented training data: original + +/-1% + +/-2% shifts
+    print("Generating augmented training data...")
+    create_augmented_train_data('train_data/positive', 'train_data_aug/positive', shifts=[0.01, 0.02])
+    create_augmented_train_data('train_data/negative', 'train_data_aug/negative', shifts=[0.01, 0.02])
+    
     # Transforms
-    # Only small translation augmentation for text; no color change, no rotation, no flip.
-    # Randomly use one of: original image (RandomAffine with zero translate),
-    # +/-1% shift, or +/-2% shift.
+    # No online augmentation; augmentation is already baked into train_data_aug.
+    # No color change, no rotation, no flip.
     train_transform = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.RandomChoice([
-            transforms.RandomAffine(degrees=0, translate=(0.01, 0.01)),  # +/-1%
-            transforms.RandomAffine(degrees=0, translate=(0.02, 0.02)),  # +/-2%
-            transforms.RandomAffine(degrees=0, translate=(0.0, 0.0)),  # original image
-        ]),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -156,8 +182,8 @@ def train():
     ])
     
     # Datasets
-    train_pos = TextDataset('train_data/positive', label=1, transform=train_transform)
-    train_neg = TextDataset('train_data/negative', label=0, transform=train_transform)
+    train_pos = TextDataset('train_data_aug/positive', label=1, transform=train_transform)
+    train_neg = TextDataset('train_data_aug/negative', label=0, transform=train_transform)
     val_pos = TextDataset('val_data/positive', label=1, transform=val_transform)
     val_neg = TextDataset('val_data/negative', label=0, transform=val_transform)
     
@@ -187,7 +213,11 @@ def train():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     model = model.to(device)
     
-    criterion = nn.CrossEntropyLoss()
+    # Class weights: positives are minority and false negatives are costly, so weight them higher.
+    pos_weight = len(train_neg) / len(train_pos)
+    class_weights = torch.tensor([1.0, pos_weight], dtype=torch.float32).to(device)
+    print(f"Using class weights: [neg={class_weights[0]:.2f}, pos={class_weights[1]:.2f}]")
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LR)
     
     # AMP scaler for mixed precision training

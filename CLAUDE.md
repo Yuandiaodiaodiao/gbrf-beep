@@ -116,6 +116,7 @@ D:\workbuddy_venv\Scripts\python.exe train_classifier.py
 
 - 去重后从 `positive_candidates/` 读取正样本，从 `new_data/` 读取负样本。
 - 8:2 划分训练集/验证集。
+- 对训练集预生成原始 + ±1% + ±2% 平移副本（验证集保持原图）。
 - 冻结 SqueezeNet 特征层，只训练最后的分类层。
 - 自动保存最佳模型并导出为 `jzsz_classifier_squeezenet.onnx`。
 
@@ -178,29 +179,31 @@ D:\workbuddy_venv\Scripts\python.exe monitor_onnx.py --record-found --duration 3
 
 ### 数据增强策略
 
-对文字检测，旋转、镜像、大幅平移都会破坏文字结构，因此训练时只用温和的 ColorJitter：
+对文字检测，旋转、镜像、大幅平移都会破坏文字结构，因此不使用这些增强。
 
-```python
-train_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.1, hue=0.0),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-```
+早期训练使用温和 ColorJitter，但后续改为仅做小幅度平移，以提升模型对轻微位置偏移的鲁棒性：
 
-> 曾尝试 ±5% 平移增强，结果在 tight crop 下文字可能移出检测区域，导致正样本召回从 98.6% 降到 95.2%，因此已移除。
+- 不使用 ColorJitter（颜色保持不变）。
+- 训练时把每个训练样本预生成 3 份：
+  - 原始图像
+  - 随机平移 **±1%** 的图像
+  - 随机平移 **±2%** 的图像
+- 验证集不使用任何增强。
 
-### 模型评估结果（最新）
+实现方式：在训练脚本内调用 `create_augmented_train_data()`，用 PIL 的 `Image.AFFINE` 生成 `train_data_aug/positive/` 和 `train_data_aug/negative/`，然后直接在这些目录上训练，不再使用在线随机增强。
 
-- 正样本：`positive_candidates/` 共 **210** 张（去重后约 197 张）。
+> 曾尝试 ±5% 平移增强，结果在 tight crop 下文字可能移出检测区域，导致正样本召回从 98.6% 降到 95.2%。±1% / ±2% 的平移幅度小，不会破坏文字结构，同时能提升模型对轻微偏移的容忍度。
+
+### 模型评估结果（最新：预生成 ±1% / ±2% 平移 + 正样本类别权重）
+
+- 正样本：`positive_candidates/` 共 **210** 张（去重后 198 张）。
 - 负样本：`new_data/` 共 **849** 张。
-- 训练：RTX 3080 Ti，30 epoch，最佳验证准确率 **96.9%**。
-- ONNX CPU 推理：**832.7 FPS**（1.20 ms/帧）。
-- `positive_candidates/` 直接召回：**200/210 = 95.2%**。
-- 未检测到的 10 张正样本中，概率多在 0.3–0.5 附近，是边界样本。
-- `new_data/` 中误报：**16/849 ≈ 1.9%**，其中包含若干疑似其他技能名（如 “回旋枪+”）或实际正样本被误标为负。
-- 实机 60 秒监控：稳定运行在 **~60 FPS**（3590 帧/60 秒），无异常触发。
+- 训练：RTX 3080 Ti，预生成 3 倍训练数据后 474 正 + 1425 负，30 epoch，最佳验证准确率 **97.5%**。
+- 类别权重：负样本 1.00，正样本 **3.01**（正样本为少数类且漏检代价高）。
+- ONNX CPU 推理：**991.2 FPS**（1.01 ms/帧）。
+- `positive_candidates/` 直接召回：**209/210 = 99.5%**。
+- `new_data/` 中误报：**19/849 ≈ 2.2%**，其中 `frame_061642_*.jpg` 三个样本概率 0.91–0.99，极可能是被误标为负样本的真正“精准收招”帧。
+- 唯一未检测到的正样本：`frame_061624_074.jpg`，概率 0.431。
 
 ### 模型版本存档
 
@@ -220,9 +223,9 @@ train_transform = transforms.Compose([
 
 ### 改进建议
 
-- 对 10 张未检测到的正样本和 16 张 `new_data/` 误报做人工复核，必要时加入训练集做 hard example mining。
-- 如需更高召回，可降低阈值到 0.3–0.4，但会引入更多误报。
-- 考虑在最终分类层前加入 `Dropout` 或使用类别权重（正样本加权）来缓解类别不平衡。
+- 唯一未检测到的正样本 `frame_061624_074.jpg` 概率 0.431，可降低阈值到 0.4 来召回它，但可能引入少量新误报。
+- `new_data/` 中 `frame_061642_*.jpg` 三个样本概率 0.91–0.99，极可能是被误标的真正正样本，建议人工复核后移动到 `positive_candidates/`。
+- 当前已使用类别权重（正样本 3.01）和 ±1% / ±2% 预生成平移，继续提升的空间主要在清理 `new_data/` 中的错标样本。
 - 若追求更高精度，可尝试 MobileNetV3-Small（2.5M 参数），但推理速度会略低于 SqueezeNet。
 
 ## 依赖
